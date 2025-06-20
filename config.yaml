@@ -1,0 +1,31 @@
+dataset:
+  name: "McAuley-Lab/Amazon-Reviews-2023"
+  subset: "5core_last_out_w_his_All_Beauty"
+  metadata_subset: "raw_meta_All_Beauty"
+  splits: ["train", "valid", "test"]
+
+metadata:
+  columns_to_keep: ["title", "parent_asin"]
+  
+output:
+  base_path: "data"
+  train_file: "train_data.parquet"
+  val_file: "val_data.parquet"
+  test_file: "test_data.parquet"
+  metadata_file: "metadata.parquet"
+  embeddings_file: "title_embeddings.parquet"
+
+embeddings:
+  model: "text-embedding-3-large"
+  batch_size: 100
+  max_retries: 3
+  delay_between_batches: 1.0
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "amazon_preprocessing.log"
+
+validation:
+  assert_no_missing_titles: true
+  log_missing_metadata: true 
