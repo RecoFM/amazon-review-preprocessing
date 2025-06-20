@@ -1,17 +1,18 @@
 # Amazon Review Dataset Preprocessing
 
-A comprehensive tool for downloading Amazon review datasets, processing metadata, and generating embeddings for product titles using OpenAI's text-embedding-large model.
+A comprehensive tool for downloading Amazon review datasets, processing metadata, and generating embeddings for product titles using OpenAI's text-embedding-3-large model.
 
 ## Features
 
 - 🔽 **Dataset Download**: Automatically downloads Amazon review datasets from Hugging Face
 - 📊 **Data Processing**: Processes train/validation/test splits with comprehensive statistics
 - 🏷️ **Metadata Management**: Fetches and filters product metadata
-- 🧮 **Embeddings Generation**: Creates embeddings for product titles using OpenAI's text-embedding-large
+- 🧮 **Embeddings Generation**: Creates embeddings for product titles using OpenAI's text-embedding-3-large
 - 💾 **Parquet Storage**: Efficient data storage in parquet format
 - 📝 **Comprehensive Logging**: Detailed logging of all operations
 - ⚙️ **YAML Configuration**: Flexible configuration management
-- 🔍 **Similarity Search**: Find similar products using embeddings
+- 🔄 **Progress Tracking**: Saves progress during embeddings generation
+- ✅ **Data Verification**: Includes notebook for verifying data integrity
 
 ## Installation
 
@@ -59,8 +60,8 @@ output:
   embeddings_file: "title_embeddings.parquet"
 
 embeddings:
-  model: "text-embedding-large"
-  batch_size: 100
+  model: "text-embedding-3-large"
+  batch_size: 50
   max_retries: 3
   delay_between_batches: 1.0
 
@@ -82,27 +83,27 @@ python main.py status
 ```
 Shows the current status of all files and provides recommendations.
 
-#### 2. Download Data Only
+#### 2. Download Data
 ```bash
-python main.py download-data
+python main.py download
 ```
 Downloads and processes the Amazon dataset with metadata.
 
-#### 3. Generate Embeddings Only
+#### 3. Generate Embeddings
 ```bash
-python main.py generate-embeddings
+python main.py embeddings
 ```
 Generates embeddings for product titles (requires data to be downloaded first).
 
 #### 4. Full Pipeline
 ```bash
-python main.py full-pipeline
+python main.py pipeline
 ```
 Runs the complete pipeline: downloads data and generates embeddings.
 
 #### 5. Find Similar Titles
 ```bash
-python main.py find-similar "wireless bluetooth headphones" --top-k 10
+python main.py similar "wireless bluetooth headphones" --top-k 10
 ```
 Finds similar product titles using embeddings.
 
@@ -110,7 +111,7 @@ Finds similar product titles using embeddings.
 You can use a custom configuration file:
 
 ```bash
-python main.py full-pipeline --config my_config.yaml
+python main.py pipeline --config my_config.yaml
 ```
 
 ## Output Files
@@ -123,6 +124,7 @@ The system generates the following files in the `data/` directory:
 - `metadata.parquet` - Product metadata (titles, ASINs)
 - `title_embeddings.parquet` - Product title embeddings
 - `amazon_preprocessing.log` - Detailed execution logs
+- `embeddings_progress.json` - Progress tracking for embeddings generation
 
 ## API Usage
 
@@ -160,15 +162,15 @@ The system works with the Amazon Reviews 2023 dataset from Hugging Face:
 - **Metadata**: Raw product metadata with titles and ASINs
 
 ### Dataset Statistics (Beauty subset example)
-- **Train**: ~50K reviews
-- **Validation**: ~6K reviews  
-- **Test**: ~6K reviews
-- **Unique Products**: ~15K items with metadata
+- **Train**: 2,029 reviews
+- **Validation**: 253 reviews
+- **Test**: 253 reviews
+- **Unique Products**: 356 items with metadata
 
 ## Embeddings
 
-- **Model**: OpenAI's text-embedding-large
-- **Dimension**: 3072 (varies by model)
+- **Model**: OpenAI's text-embedding-3-large
+- **Dimension**: 3072
 - **Use Cases**: 
   - Product similarity search
   - Recommendation systems
@@ -179,6 +181,7 @@ The system works with the Amazon Reviews 2023 dataset from Hugging Face:
 
 The system includes comprehensive error handling:
 - API rate limiting and retries for OpenAI requests
+- Progress tracking and resumption for embeddings generation
 - Graceful handling of missing data
 - Detailed error logging
 - Validation of data integrity
@@ -193,6 +196,15 @@ All operations are logged with different levels:
 
 Logs are written to both console and file (`amazon_preprocessing.log`).
 
+## Data Verification
+
+The project includes a Jupyter notebook (`verify_data.ipynb`) for verifying:
+- Existence of all required files
+- Data split statistics and integrity
+- Metadata coverage
+- Embeddings dimensions and coverage
+- Missing data detection
+
 ## Troubleshooting
 
 ### Common Issues
@@ -201,7 +213,7 @@ Logs are written to both console and file (`amazon_preprocessing.log`).
    ```
    Error: OpenAI API key not found
    ```
-   Solution: Set the `OPENAI_API_KEY` environment variable.
+   Solution: Set the `OPENAI_API_KEY` in `.env` file.
 
 2. **Dataset Download Failures**
    ```
@@ -219,12 +231,19 @@ Logs are written to both console and file (`amazon_preprocessing.log`).
    ```
    Warning: Rate limited by OpenAI API
    ```
-   Solution: The system automatically retries with exponential backoff.
+   Solution: The system automatically retries with exponential backoff and saves progress.
+
+5. **API Quota Exceeded**
+   ```
+   Error: API quota exceeded
+   ```
+   Solution: Check your OpenAI account quota and billing. The system saves progress and can resume later.
 
 ### Getting Help
 
 - Check the log file for detailed error information
 - Use `python main.py status` to diagnose issues
+- Run `verify_data.ipynb` to check data integrity
 - Ensure all dependencies are installed correctly
 - Verify your OpenAI API key has sufficient quota
 
@@ -235,11 +254,12 @@ Logs are written to both console and file (`amazon_preprocessing.log`).
 amazon-review-preprocessing/
 ├── main.py                 # Main CLI orchestrator
 ├── data_downloader.py      # Dataset download and processing
-├── embeddings_generator.py # Embeddings generation with LangChain
+├── embeddings_generator.py # Embeddings generation with OpenAI
 ├── config.yaml            # Configuration file
-├── requirements.txt        # Python dependencies
-├── README.md              # This file
-└── data/                  # Output directory (created automatically)
+├── requirements.txt       # Python dependencies
+├── verify_data.ipynb     # Data verification notebook
+├── README.md             # This file
+└── data/                 # Output directory (created automatically)
 ```
 
 ### Adding New Features
