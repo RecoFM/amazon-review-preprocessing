@@ -1,11 +1,28 @@
 dataset:
   name: "McAuley-Lab/Amazon-Reviews-2023"
-  subset: "5core_last_out_w_his_All_Beauty"
-  metadata_subset: "raw_meta_All_Beauty"
+  # subset: "5core_last_out_w_his_All_Beauty"
+  subset: "5core_last_out_w_his_Sports_and_Outdoors"
+  # metadata_subset: "raw_meta_All_Beauty"
+  metadata_subset: "raw_meta_Sports_and_Outdoors"
   splits: ["train", "valid", "test"]
 
 metadata:
-  columns_to_keep: ["title", "parent_asin"]
+  columns_to_keep: [
+    "title",
+    "parent_asin",
+    "main_category",
+    "average_rating",
+    "rating_number",
+    "features",
+    "description",
+    "price",
+    "images",
+    "videos",
+    "store",
+    "categories",
+    "details",
+    "bought_together"
+  ]
   
 output:
   base_path: "data"
@@ -17,9 +34,16 @@ output:
 
 embeddings:
   model: "text-embedding-3-large"
-  batch_size: 100
+  batch_size: 512
   max_retries: 3
-  delay_between_batches: 1.0
+  delay_between_batches: 0.5
+
+huggingface:
+  repository_id: "ChernovAndrei/reco-fm-data"
+  private: false
+  token: null  # Will be loaded from HUGGINGFACE_TOKEN env variable
+  create_repo: true
+  commit_message: "Upload preprocessed Amazon review dataset with embeddings"
 
 logging:
   level: "INFO"
@@ -27,5 +51,4 @@ logging:
   file: "amazon_preprocessing.log"
 
 validation:
-  assert_no_missing_titles: true
   log_missing_metadata: true 

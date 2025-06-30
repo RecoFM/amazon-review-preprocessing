@@ -1,6 +1,6 @@
 # Amazon Review Dataset Preprocessing
 
-A comprehensive tool for downloading Amazon review datasets, processing metadata, and generating embeddings for product titles using OpenAI's text-embedding-3-large model.
+A comprehensive tool for downloading Amazon review datasets, processing metadata, and generating embeddings for product titles using OpenAI's text-embedding-3-large model. The processed dataset can be uploaded to Hugging Face Hub for easy sharing and distribution.
 
 ## Features
 
@@ -8,11 +8,18 @@ A comprehensive tool for downloading Amazon review datasets, processing metadata
 - 📊 **Data Processing**: Processes train/validation/test splits with comprehensive statistics
 - 🏷️ **Metadata Management**: Fetches and filters product metadata
 - 🧮 **Embeddings Generation**: Creates embeddings for product titles using OpenAI's text-embedding-3-large
-- 💾 **Parquet Storage**: Efficient data storage in parquet format
+- 💾 **Parquet Storage**: Efficient data storage in parquet format with organized directory structure
 - 📝 **Comprehensive Logging**: Detailed logging of all operations
 - ⚙️ **YAML Configuration**: Flexible configuration management
 - 🔄 **Progress Tracking**: Saves progress during embeddings generation
 - ✅ **Data Verification**: Includes notebook for verifying data integrity
+- 🚀 **Hugging Face Upload**: Direct upload to Hugging Face Hub for dataset sharing
+
+## Requirements
+
+- Python 3.8+
+- OpenAI API key (for embeddings generation)
+- HuggingFace account (for dataset access)
 
 ## Installation
 
@@ -38,6 +45,9 @@ A comprehensive tool for downloading Amazon review datasets, processing metadata
    ```bash
    # Required for embeddings generation
    OPENAI_API_KEY=your_openai_api_key_here
+   
+   # Required for Hugging Face Hub upload
+   HUGGINGFACE_TOKEN=your_huggingface_token_here
    ```
 
 ## Configuration
@@ -51,8 +61,17 @@ dataset:
   metadata_subset: "raw_meta_All_Beauty"
   splits: ["train", "valid", "test"]
 
+metadata:
+  columns_to_keep: ["title", "parent_asin"]
+  
 output:
   base_path: "data"
+  dataset_path: "{base_path}/{dataset.subset}"
+  train_path: "{dataset_path}/train"
+  val_path: "{dataset_path}/val"
+  test_path: "{dataset_path}/test"
+  meta_path: "{dataset_path}/meta"
+  embeddings_path: "{dataset_path}/embeddings"
   train_file: "train_data.parquet"
   val_file: "val_data.parquet"
   test_file: "test_data.parquet"
@@ -61,9 +80,16 @@ output:
 
 embeddings:
   model: "text-embedding-3-large"
-  batch_size: 50
+  batch_size: 100
   max_retries: 3
   delay_between_batches: 1.0
+
+huggingface:
+  repository_id: "username/dataset-name"  # Set this to your desired repo name
+  private: false
+  token: null  # Will be loaded from HUGGINGFACE_TOKEN env variable
+  create_repo: true
+  commit_message: "Upload preprocessed Amazon review dataset with embeddings"
 
 logging:
   level: "INFO"
@@ -81,7 +107,7 @@ The system provides several commands through `main.py`:
 ```bash
 python main.py status
 ```
-Shows the current status of all files and provides recommendations.
+Shows the current status of all files and directories, and provides recommendations.
 
 #### 2. Download Data
 ```bash
@@ -107,6 +133,12 @@ python main.py similar "wireless bluetooth headphones" --top-k 10
 ```
 Finds similar product titles using embeddings.
 
+#### 6. Upload to Hugging Face Hub
+```bash
+python main.py upload
+```
+Uploads the processed dataset to Hugging Face Hub.
+
 ### Custom Configuration
 You can use a custom configuration file:
 
@@ -114,17 +146,31 @@ You can use a custom configuration file:
 python main.py pipeline --config my_config.yaml
 ```
 
-## Output Files
+### Uploading to HuggingFace Hub
+To upload the processed dataset to HuggingFace Hub, use the following command:
+```bash
+huggingface-cli upload ChernovAndrei/reco-fm-data . --repo-type=dataset
+```
 
-The system generates the following files in the `data/` directory:
+## Directory Structure
 
-- `train_data.parquet` - Training dataset
-- `val_data.parquet` - Validation dataset  
-- `test_data.parquet` - Test dataset
-- `metadata.parquet` - Product metadata (titles, ASINs)
-- `title_embeddings.parquet` - Product title embeddings
-- `amazon_preprocessing.log` - Detailed execution logs
-- `embeddings_progress.json` - Progress tracking for embeddings generation
+The system organizes data in the following structure:
+
+```
+data/
+└── {dataset.subset}/
+    ├── train/
+    │   └── train_data.parquet
+    ├── val/
+    │   └── val_data.parquet
+    ├── test/
+    │   └── test_data.parquet
+    ├── meta/
+    │   └── metadata.parquet
+    └── embeddings/
+        ├── title_embeddings.parquet
+        └── embeddings_progress.json
+```
 
 ## API Usage
 
@@ -133,6 +179,7 @@ You can also use the components programmatically:
 ```python
 from data_downloader import AmazonDataDownloader, load_config, setup_logging
 from embeddings_generator import TitleEmbeddingsGenerator
+from huggingface_uploader import HuggingFaceUploader
 
 # Load configuration
 config = load_config("config.yaml")
@@ -146,10 +193,15 @@ combined_df, metadata_df = downloader.download_and_process()
 embeddings_generator = TitleEmbeddingsGenerator(config)
 embeddings_df = embeddings_generator.generate_embeddings(metadata_df)
 
+# Upload to Hugging Face Hub
+uploader = HuggingFaceUploader(config)
+uploader.upload_dataset()
+
 # Find similar titles
 similar = embeddings_generator.find_similar_titles(
     "wireless headphones", 
     embeddings_df, 
+    metadata_df,
     top_k=5
 )
 ```
@@ -199,7 +251,7 @@ Logs are written to both console and file (`amazon_preprocessing.log`).
 ## Data Verification
 
 The project includes a Jupyter notebook (`verify_data.ipynb`) for verifying:
-- Existence of all required files
+- Existence of all required files and directories
 - Data split statistics and integrity
 - Metadata coverage
 - Embeddings dimensions and coverage
@@ -215,25 +267,31 @@ The project includes a Jupyter notebook (`verify_data.ipynb`) for verifying:
    ```
    Solution: Set the `OPENAI_API_KEY` in `.env` file.
 
-2. **Dataset Download Failures**
+2. **Hugging Face Token Not Found**
+   ```
+   Error: Hugging Face token not found
+   ```
+   Solution: Set the `HUGGINGFACE_TOKEN` in `.env` file.
+
+3. **Dataset Download Failures**
    ```
    Error: Failed to download dataset
    ```
    Solution: Check internet connection and Hugging Face dataset availability.
 
-3. **Memory Issues**
+4. **Memory Issues**
    ```
    Error: Out of memory
    ```
    Solution: Reduce batch size in config or use a machine with more RAM.
 
-4. **Rate Limiting**
+5. **Rate Limiting**
    ```
    Warning: Rate limited by OpenAI API
    ```
    Solution: The system automatically retries with exponential backoff and saves progress.
 
-5. **API Quota Exceeded**
+6. **API Quota Exceeded**
    ```
    Error: API quota exceeded
    ```
@@ -245,21 +303,22 @@ The project includes a Jupyter notebook (`verify_data.ipynb`) for verifying:
 - Use `python main.py status` to diagnose issues
 - Run `verify_data.ipynb` to check data integrity
 - Ensure all dependencies are installed correctly
-- Verify your OpenAI API key has sufficient quota
+- Verify your API keys and tokens are set correctly
 
 ## Development
 
 ### Project Structure
 ```
 amazon-review-preprocessing/
-├── main.py                 # Main CLI orchestrator
-├── data_downloader.py      # Dataset download and processing
-├── embeddings_generator.py # Embeddings generation with OpenAI
-├── config.yaml            # Configuration file
-├── requirements.txt       # Python dependencies
-├── verify_data.ipynb     # Data verification notebook
-├── README.md             # This file
-└── data/                 # Output directory (created automatically)
+├── main.py                    # Main CLI orchestrator
+├── data_downloader.py         # Dataset download and processing
+├── embeddings_generator.py    # Embeddings generation with OpenAI
+├── huggingface_uploader.py    # Hugging Face Hub upload functionality
+├── config.yaml               # Configuration file
+├── requirements.txt          # Python dependencies
+├── verify_data.ipynb        # Data verification notebook
+├── README.md                # This file
+└── data/                    # Output directory (created automatically)
 ```
 
 ### Adding New Features
@@ -268,6 +327,7 @@ amazon-review-preprocessing/
 2. **Custom Embeddings**: Extend `TitleEmbeddingsGenerator` class
 3. **Additional Processing**: Add methods to `AmazonDataDownloader` class
 4. **New Commands**: Add commands to `main.py` with `@app.command()` decorator
+5. **Upload Options**: Modify `HuggingFaceUploader` class for custom upload behavior
 
 ## License
 
@@ -278,7 +338,7 @@ This project is open source. Please check the license file for details.
 Contributions are welcome! Please:
 1. Fork the repository
 2. Create a feature branch
-3. Add tests for new functionality
+3. Make your changes
 4. Submit a pull request
 
 ## Acknowledgments

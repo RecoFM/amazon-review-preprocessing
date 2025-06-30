@@ -19,9 +19,59 @@ class AmazonDataDownloader:
         self.config = config
         self.logger = logging.getLogger(__name__)
         
-        # Create output directory
-        self.output_path = Path(config['output']['base_path'])
-        self.output_path.mkdir(exist_ok=True)
+        # Create output directories
+        self.base_path = Path(config['output']['base_path'])
+        self.dataset_path = Path(config['output']['base_path']) / config['dataset']['subset']
+        
+        # Create all required directories
+        self.train_path = self.dataset_path / "train"
+        self.val_path = self.dataset_path / "val"
+        self.test_path = self.dataset_path / "test"
+        self.meta_path = self.dataset_path / "meta"
+        self.embeddings_path = self.dataset_path / "embeddings"
+        
+        for path in [self.train_path, self.val_path, self.test_path, 
+                    self.meta_path, self.embeddings_path]:
+            path.mkdir(parents=True, exist_ok=True)
+        
+    def _remove_missing_titles(self, metadata_df: pd.DataFrame, dataset_splits: Dict[str, pd.DataFrame]) -> Tuple[pd.DataFrame, Dict[str, pd.DataFrame]]:
+        """
+        Remove items with missing titles from metadata and all dataset splits.
+        
+        Args:
+            metadata_df: DataFrame containing metadata
+            dataset_splits: Dictionary of dataset splits
+            
+        Returns:
+            Tuple of (cleaned_metadata_df, cleaned_dataset_splits)
+        """
+        # Find items with missing titles
+        missing_titles_mask = (
+            metadata_df['title'].isnull() | 
+            (metadata_df['title'].astype(str).str.strip() == '')
+        )
+        missing_asins = metadata_df[missing_titles_mask]['parent_asin'].tolist()
+        
+        if missing_asins:
+            self.logger.warning(f"Found {len(missing_asins)} items with missing or empty titles:")
+            for asin in missing_asins:
+                self.logger.warning(f"  - ASIN: {asin}")
+            
+            # Remove from metadata
+            metadata_df = metadata_df[~missing_titles_mask].copy()
+            
+            # Remove from all splits
+            cleaned_splits = {}
+            for split_name, df in dataset_splits.items():
+                cleaned_df = df[~df['parent_asin'].isin(missing_asins)].copy()
+                removed_count = len(df) - len(cleaned_df)
+                if removed_count > 0:
+                    self.logger.warning(f"Removed {removed_count} interactions with missing titles from {split_name} split")
+                cleaned_splits[split_name] = cleaned_df
+            
+            return metadata_df, cleaned_splits
+        
+        return metadata_df, dataset_splits
         
     def download_and_process(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
@@ -41,10 +91,13 @@ class AmazonDataDownloader:
         # Step 3: Load and filter metadata
         metadata_df = self._load_metadata(parent_asins_needed)
         
-        # Step 4: Validate and log statistics
+        # Step 4: Remove items with missing titles
+        metadata_df, dataset_splits = self._remove_missing_titles(metadata_df, dataset_splits)
+        
+        # Step 5: Validate and log statistics
         self._validate_and_log_stats(dataset_splits, metadata_df, parent_asins_needed)
         
-        # Step 5: Save datasets
+        # Step 6: Save datasets
         combined_df = self._save_datasets(dataset_splits, metadata_df)
         
         self.logger.info("Amazon dataset processing completed successfully")
@@ -149,10 +202,11 @@ class AmazonDataDownloader:
         
         self.logger.info(f"Metadata statistics:")
         self.logger.info(f"  - Total metadata records: {len(metadata_df)}")
-        self.logger.info(f"  - Missing or empty titles: {missing_titles}")
         
-        if self.config['validation']['assert_no_missing_titles']:
-            assert missing_titles == 0, f"Found {missing_titles} missing or empty titles"
+        # We don't need to assert no missing titles anymore since we've removed them
+        if missing_titles > 0:
+            self.logger.warning(f"Found {missing_titles} remaining items with missing or empty titles after cleanup")
+        else:
             self.logger.info("✓ All titles are present and non-empty")
         
         # Coverage validation
@@ -176,18 +230,19 @@ class AmazonDataDownloader:
         self.logger.info("Saving datasets to parquet files")
         
         # Save individual splits
+        split_paths = {
+            'train': self.train_path,
+            'val': self.val_path,
+            'test': self.test_path
+        }
+        
         for split_name, df in dataset_splits.items():
-            if split_name == 'val':
-                filename = self.config['output']['val_file']
-            else:
-                filename = self.config['output'][f'{split_name}_file']
-            
-            filepath = self.output_path / filename
+            filepath = split_paths[split_name] / self.config['output'][f'{split_name}_file']
             df.to_parquet(filepath, index=False)
             self.logger.info(f"Saved {split_name} split to {filepath}")
         
         # Save metadata
-        metadata_filepath = self.output_path / self.config['output']['metadata_file']
+        metadata_filepath = self.meta_path / self.config['output']['metadata_file']
         metadata_df.to_parquet(metadata_filepath, index=False)
         self.logger.info(f"Saved metadata to {metadata_filepath}")
         

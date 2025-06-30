@@ -1,18 +1,25 @@
 """
-Title embeddings generator using OpenAI's API.
+Generate embeddings for product titles using OpenAI's text-embedding-3-large model.
 """
 
 import logging
 import os
 from pathlib import Path
+import json
 from typing import Dict, Any, List, Optional
 import pandas as pd
+import numpy as np
 from openai import OpenAI
 from tqdm import tqdm
-import numpy as np
-import json
-from dotenv import load_dotenv
 import time
+
+
+def check_openai_api_key() -> None:
+    """Check if OpenAI API key is available."""
+    if not os.getenv("OPENAI_API_KEY"):
+        raise ValueError(
+            "OpenAI API key not found. Please set OPENAI_API_KEY environment variable."
+        )
 
 
 class TitleEmbeddingsGenerator:
@@ -22,256 +29,183 @@ class TitleEmbeddingsGenerator:
         """Initialize the generator with configuration."""
         self.config = config
         self.logger = logging.getLogger(__name__)
+        self.client = OpenAI()
         
-        # Load environment variables
-        load_dotenv()
-        api_key = os.getenv('OPENAI_API_KEY')
-        if not api_key:
-            raise ValueError("OpenAI API key not found. Please set OPENAI_API_KEY in .env file")
-        self.client = OpenAI(api_key=api_key)
+        # Setup paths
+        self.base_path = Path(config['output']['base_path'])
+        self.dataset_path = self.base_path / config['dataset']['subset']
+        self.embeddings_path = self.dataset_path / "embeddings"
+        self.embeddings_path.mkdir(parents=True, exist_ok=True)
         
-        # Create output directory
-        self.output_path = Path(config['output']['base_path'])
-        self.output_path.mkdir(exist_ok=True)
+        # Progress tracking
+        self.progress_file = self.embeddings_path / "embeddings_progress.json"
+        self.completed_asins = self._load_progress()
         
-        # Progress tracking file
-        self.progress_file = self.output_path / "embeddings_progress.json"
-        
-    def load_progress(self) -> Dict[str, Any]:
-        """Load progress from previous runs."""
+    def _load_progress(self) -> set:
+        """Load progress from file."""
         if self.progress_file.exists():
             with open(self.progress_file, 'r') as f:
-                return json.load(f)
-        return {
-            'completed_batches': [],
-            'successful_embeddings': {},
-            'total_processed': 0,
-            'failed_batches': []
-        }
-        
-    def save_progress(self, progress: Dict[str, Any]):
-        """Save current progress."""
+                return set(json.load(f))
+        return set()
+    
+    def _save_progress(self) -> None:
+        """Save progress to file."""
         with open(self.progress_file, 'w') as f:
-            json.dump(progress, f)
-            
-    def generate_embeddings(self, metadata_df: pd.DataFrame) -> pd.DataFrame:
+            json.dump(list(self.completed_asins), f)
+    
+    def _get_embeddings_batch(self, texts: List[str], retries: int = 0) -> Optional[List[List[float]]]:
+        """Get embeddings for a batch of texts using OpenAI's API."""
+        try:
+            response = self.client.embeddings.create(
+                model=self.config['embeddings']['model'],
+                input=texts
+            )
+            return [data.embedding for data in response.data]
+        except Exception as e:
+            if retries < self.config['embeddings']['max_retries']:
+                self.logger.warning(f"Retry {retries + 1} after error: {str(e)}")
+                time.sleep(2 ** retries)  # Exponential backoff
+                return self._get_embeddings_batch(texts, retries + 1)
+            else:
+                self.logger.error(f"Failed to get embeddings after {retries} retries: {str(e)}")
+                return None
+    
+    def generate_embeddings(self, metadata_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
         """
         Generate embeddings for product titles.
         
         Args:
-            metadata_df: DataFrame containing product titles
+            metadata_df: Optional metadata DataFrame. If not provided, will load from file.
             
         Returns:
-            DataFrame with title embeddings
+            DataFrame with embeddings
         """
         self.logger.info("Starting embeddings generation")
-        self.logger.info(f"Generating embeddings for {len(metadata_df)} titles")
         
-        # Load previous progress
-        progress = self.load_progress()
+        # Load metadata if not provided
+        if metadata_df is None:
+            metadata_path = self.dataset_path / "meta" / self.config['output']['metadata_file']
+            if not metadata_path.exists():
+                raise FileNotFoundError(f"Metadata file not found at {metadata_path}")
+            metadata_df = pd.read_parquet(metadata_path)
         
-        # Create batches
-        batch_size = self.config['embeddings']['batch_size']
-        titles = metadata_df['title'].tolist()
-        parent_asins = metadata_df['parent_asin'].tolist()
-        
-        # Skip already processed titles
-        if progress['successful_embeddings']:
-            processed_asins = set(progress['successful_embeddings'].keys())
-            titles_to_process = []
-            asins_to_process = []
-            for title, asin in zip(titles, parent_asins):
-                if asin not in processed_asins:
-                    titles_to_process.append(title)
-                    asins_to_process.append(asin)
-            titles = titles_to_process
-            parent_asins = asins_to_process
-            self.logger.info(f"Skipping {len(processed_asins)} already processed titles")
-        
-        batches = [
-            (titles[i:i + batch_size], parent_asins[i:i + batch_size])
-            for i in range(0, len(titles), batch_size)
+        # Filter for titles that need embeddings
+        titles_to_process = metadata_df[
+            ~metadata_df['parent_asin'].isin(self.completed_asins)
         ]
         
-        # Process batches
-        embeddings_dict = progress['successful_embeddings'].copy()
-        failed_batches = progress.get('failed_batches', [])
+        if len(titles_to_process) == 0:
+            self.logger.info("No new titles to process")
+            embeddings_path = self.embeddings_path / self.config['output']['embeddings_file']
+            if embeddings_path.exists():
+                return pd.read_parquet(embeddings_path)
+            else:
+                return pd.DataFrame(columns=['parent_asin', 'title', 'embedding'])
         
-        for batch_idx, (title_batch, asin_batch) in enumerate(tqdm(batches, desc="Generating embeddings")):
-            if str(batch_idx) in progress['completed_batches']:
-                continue
-                
-            try:
-                batch_embeddings = self._generate_batch_embeddings(title_batch, asin_batch)
-                embeddings_dict.update(batch_embeddings)
-                progress['completed_batches'].append(str(batch_idx))
-                progress['successful_embeddings'] = embeddings_dict
-                progress['total_processed'] = len(embeddings_dict)
-                self.save_progress(progress)
-                
-                # Add delay between successful batches
-                time.sleep(self.config['embeddings']['delay_between_batches'])
-                
-            except Exception as e:
-                error_msg = str(e)
-                self.logger.error(f"Failed to process batch {batch_idx}: {error_msg}")
-                
-                # Check for rate limit or quota errors
-                if "insufficient_quota" in error_msg or "rate_limit" in error_msg:
-                    failed_batches.append(batch_idx)
-                    progress['failed_batches'] = failed_batches
-                    self.save_progress(progress)
-                    
-                    # Create partial DataFrame with successful embeddings
-                    if embeddings_dict:
-                        partial_df = pd.DataFrame([
-                            {
-                                'parent_asin': asin,
-                                'title': metadata_df[metadata_df['parent_asin'] == asin]['title'].iloc[0],
-                                'embedding': embedding
-                            }
-                            for asin, embedding in embeddings_dict.items()
-                        ])
-                        
-                        # Save partial results
-                        output_file = self.output_path / self.config['output']['embeddings_file']
-                        partial_df.to_parquet(output_file, index=False)
-                        self.logger.info(f"Saved partial embeddings to {output_file}")
-                        
-                        # Log statistics for partial completion
-                        self.logger.info("Partial embedding generation statistics:")
-                        self.logger.info(f"  - Total titles: {len(metadata_df)}")
-                        self.logger.info(f"  - Successfully embedded: {len(embeddings_dict)}")
-                        self.logger.info(f"  - Failed embeddings: {len(metadata_df) - len(embeddings_dict)}")
-                        self.logger.info(f"  - Success rate: {(len(embeddings_dict) / len(metadata_df)) * 100:.2f}%")
-                        self.logger.info(f"  - Failed batches: {failed_batches}")
-                    
-                    raise RuntimeError(
-                        f"API quota exceeded. Successfully processed {len(embeddings_dict)} titles. "
-                        f"Failed batches: {failed_batches}. Please check your OpenAI account quota "
-                        "and billing details, then run again to continue from where we left off."
-                    )
-                else:
-                    # For other errors, just add to failed batches and continue
-                    failed_batches.append(batch_idx)
-                    progress['failed_batches'] = failed_batches
-                    self.save_progress(progress)
+        self.logger.info(f"Generating embeddings for {len(titles_to_process)} titles")
         
-        # Create final DataFrame
-        embeddings_df = pd.DataFrame([
-            {
-                'parent_asin': asin,
-                'title': metadata_df[metadata_df['parent_asin'] == asin]['title'].iloc[0],
-                'embedding': embedding
-            }
-            for asin, embedding in embeddings_dict.items()
-        ])
-        
-        # Log statistics
-        self.logger.info("Embedding generation statistics:")
-        self.logger.info(f"  - Total titles: {len(metadata_df)}")
-        self.logger.info(f"  - Successfully embedded: {len(embeddings_dict)}")
-        self.logger.info(f"  - Failed embeddings: {len(metadata_df) - len(embeddings_dict)}")
-        self.logger.info(f"  - Success rate: {(len(embeddings_dict) / len(metadata_df)) * 100:.2f}%")
-        
-        # Only raise error if there are actual failed batches
-        if failed_batches and len(embeddings_dict) < len(metadata_df):
-            failed_titles = sum(len(batches[idx][0]) for idx in failed_batches)
-            error_msg = f"Failed to generate embeddings for {failed_titles} titles in batches: {failed_batches}"
-            self.logger.error(error_msg)
-            raise RuntimeError(error_msg)
-        
-        # Save embeddings
-        output_file = self.output_path / self.config['output']['embeddings_file']
-        embeddings_df.to_parquet(output_file, index=False)
-        self.logger.info(f"Saved embeddings to {output_file}")
-        
-        self.logger.info("Embeddings generation completed successfully")
-        return embeddings_df
-    
-    def _generate_batch_embeddings(
-        self, titles: List[str], asins: List[str]
-    ) -> Dict[str, List[float]]:
-        """Generate embeddings for a batch of titles."""
-        max_retries = self.config['embeddings']['max_retries']
+        # Process in batches
+        batch_size = self.config['embeddings']['batch_size']
         delay = self.config['embeddings']['delay_between_batches']
         
-        for attempt in range(max_retries):
-            try:
-                response = self.client.embeddings.create(
-                    model=self.config['embeddings']['model'],
-                    input=titles
-                )
+        all_embeddings = []
+        all_asins = []
+        all_titles = []
+        
+        for i in tqdm(range(0, len(titles_to_process), batch_size)):
+            batch = titles_to_process.iloc[i:i + batch_size]
+            batch_titles = batch['title'].tolist()
+            batch_embeddings = self._get_embeddings_batch(batch_titles)
+            
+            if batch_embeddings:
+                all_embeddings.extend(batch_embeddings)
+                all_asins.extend(batch['parent_asin'].tolist())
+                all_titles.extend(batch_titles)
+                self.completed_asins.update(batch['parent_asin'].tolist())
                 
-                # Create dictionary mapping ASINs to embeddings
-                embeddings_dict = {
-                    asin: data.embedding
-                    for asin, data in zip(asins, response.data)
-                }
-                
-                return embeddings_dict
-                
-            except Exception as e:
-                error_msg = str(e)
-                self.logger.warning(
-                    f"Attempt {attempt + 1} failed: Error code: {getattr(e, 'status_code', 'unknown')} - {error_msg}"
-                )
-                
-                # Check for rate limit or quota errors
-                if "insufficient_quota" in error_msg or "rate_limit" in error_msg:
-                    raise  # Let the caller handle quota errors
-                
-                if attempt < max_retries - 1:
-                    retry_delay = delay * (attempt + 1)
-                    self.logger.info(f"Retrying in {retry_delay} seconds...")
-                    time.sleep(retry_delay)
-                else:
-                    raise
-    
-    def load_embeddings(self) -> pd.DataFrame:
-        """Load existing embeddings from file."""
-        embeddings_file = self.output_path / self.config['output']['embeddings_file']
-        return pd.read_parquet(embeddings_file)
+                # Save progress after each batch
+                self._save_progress()
+            
+            if i + batch_size < len(titles_to_process):
+                time.sleep(delay)
+        
+        # Create embeddings DataFrame
+        embeddings_df = pd.DataFrame({
+            'parent_asin': all_asins,
+            'title': all_titles,
+            'embedding': all_embeddings
+        })
+        
+        # Load existing embeddings if any
+        embeddings_path = self.embeddings_path / self.config['output']['embeddings_file']
+        if embeddings_path.exists():
+            existing_df = pd.read_parquet(embeddings_path)
+            embeddings_df = pd.concat([existing_df, embeddings_df], ignore_index=True)
+        
+        # Save embeddings
+        embeddings_df.to_parquet(embeddings_path, index=False)
+        self.logger.info(f"Saved {len(embeddings_df)} embeddings to {embeddings_path}")
+        
+        return embeddings_df
     
     def find_similar_titles(
-        self, query: str, embeddings_df: pd.DataFrame, top_k: int = 5
+        self, 
+        query: str, 
+        embeddings_df: Optional[pd.DataFrame] = None,
+        metadata_df: Optional[pd.DataFrame] = None,
+        top_k: int = 5
     ) -> pd.DataFrame:
         """
-        Find titles similar to a query using cosine similarity.
+        Find similar titles using embeddings.
         
         Args:
-            query: Query title to find similar titles for
-            embeddings_df: DataFrame containing title embeddings
+            query: Query text to find similar titles for
+            embeddings_df: Optional embeddings DataFrame. If not provided, will load from file.
+            metadata_df: Optional metadata DataFrame. If not provided, will load from file.
             top_k: Number of similar titles to return
             
         Returns:
-            DataFrame with similar titles and similarity scores
+            DataFrame with similar titles and their scores
         """
-        # Generate embedding for query
-        query_response = self.client.embeddings.create(
-            model=self.config['embeddings']['model'],
-            input=[query]
+        # Get query embedding
+        query_embedding = self._get_embeddings_batch([query])
+        if not query_embedding:
+            raise ValueError("Failed to get embedding for query")
+        query_embedding = query_embedding[0]
+        
+        # Load embeddings if not provided
+        if embeddings_df is None:
+            embeddings_path = self.embeddings_path / self.config['output']['embeddings_file']
+            if not embeddings_path.exists():
+                raise FileNotFoundError(f"Embeddings file not found at {embeddings_path}")
+            embeddings_df = pd.read_parquet(embeddings_path)
+        
+        # Load metadata if not provided
+        if metadata_df is None:
+            metadata_path = self.dataset_path / "meta" / self.config['output']['metadata_file']
+            if not metadata_path.exists():
+                raise FileNotFoundError(f"Metadata file not found at {metadata_path}")
+            metadata_df = pd.read_parquet(metadata_path)
+        
+        # Convert embeddings to numpy array for fast computation
+        embeddings = np.array(embeddings_df['embedding'].tolist())
+        query_embedding = np.array(query_embedding)
+        
+        # Compute cosine similarities
+        similarities = np.dot(embeddings, query_embedding) / (
+            np.linalg.norm(embeddings, axis=1) * np.linalg.norm(query_embedding)
         )
-        query_embedding = query_response.data[0].embedding
         
-        # Calculate cosine similarity
-        similarities = []
-        for _, row in embeddings_df.iterrows():
-            similarity = self._cosine_similarity(query_embedding, row['embedding'])
-            similarities.append(similarity)
+        # Get top-k similar titles
+        top_indices = np.argsort(similarities)[-top_k:][::-1]
         
-        # Add similarities to DataFrame
-        results_df = embeddings_df.copy()
-        results_df['similarity'] = similarities
+        # Get titles and scores
+        results = []
+        for idx in top_indices:
+            results.append({
+                'parent_asin': embeddings_df.iloc[idx]['parent_asin'],
+                'title': embeddings_df.iloc[idx]['title'],
+                'similarity_score': similarities[idx]
+            })
         
-        # Sort by similarity and return top k
-        return results_df.sort_values('similarity', ascending=False).head(top_k)
-    
-    def _cosine_similarity(self, a: List[float], b: List[float]) -> float:
-        """Calculate cosine similarity between two vectors."""
-        return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
-
-
-def check_openai_api_key() -> bool:
-    """Check if OpenAI API key is set."""
-    return bool(os.getenv('OPENAI_API_KEY')) 
+        return pd.DataFrame(results) 
